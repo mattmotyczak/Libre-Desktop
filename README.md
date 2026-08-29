@@ -6,6 +6,7 @@ A simple widget desktop app to keep track of your glucose without the need of un
 
 # // Install guide:
 1. Download this repository as a ZIP file by clicking the big green button on the right side of your screen that says `Code`.
+   - Alternatively, go to the `Releases` section and pick `Source code (.ZIP)`.
 2. Decompress that file on the directory that you want your app installed.
 3. Execute `install_dependencies.bat`.
 4. Execute `build.bat`.
