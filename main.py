@@ -18,8 +18,11 @@ def set_startup_registry(enabled):
     key = winreg.OpenKey(winreg.HKEY_CURRENT_USER, REG_RUN_PATH, 0, winreg.KEY_SET_VALUE)
     try:
         if enabled:
-            # Command to launch using current python executable and script
-            cmd = f'"{sys.executable}" "{os.path.abspath(__file__)}"'
+            # When frozen, launch the exe itself; otherwise use the python + script
+            if getattr(sys, "frozen", False):
+                cmd = f'"{sys.executable}"'
+            else:
+                cmd = f'"{sys.executable}" "{os.path.abspath(__file__)}"'
             winreg.SetValueEx(key, REG_APP_NAME, 0, winreg.REG_SZ, cmd)
         else:
             try:
@@ -35,26 +38,30 @@ class PollerThread(QThread):
     data_received = Signal(float, str, str, bool) # val, arrow, timestamp, is_mock
     status_msg = Signal(str)
 
-    def __init__(self, config_manager):
+    def __init__(self, config_manager, client):
         super().__init__()
         self.config_manager = config_manager
+        self.client = client
         self.running = True
 
     def run(self):
-        # Create client inside the thread
+        # Reuse the shared, already-authenticated client so we don't hammer
+        # the login endpoint (LibreLinkUp rate-limits to a few/minute -> HTTP 429).
         email = self.config_manager.get("email")
         pwd = self.config_manager.get("password")
         region = self.config_manager.get("region")
-        
-        client = LibreLinkUpClient(email, pwd, region)
-        login_done = False
-        
+
+        client = self.client
+        client.email = email
+        client.password = pwd
+        client.region = region
+
         while self.running:
-            # Login if not done
-            if not login_done:
+            # Only login if we don't have a token yet
+            if client.token is None:
                 ok, msg = client.login()
                 if ok:
-                    login_done = True
+                    pass
                 else:
                     self.status_msg.emit(f"Auth failed: {msg}")
                     # Wait 30 seconds before retrying login
@@ -131,12 +138,16 @@ class AppController:
 
         # Poller thread
         self.poller = None
+        # Shared HTTP client: reused across pollers so we don't re-login
+        # (and trip LibreLinkUp's login rate-limit / get HTTP 429) on every
+        # settings save or force refresh.
+        self.client = LibreLinkUpClient()
         self.start_poller()
 
     def start_poller(self):
         if self.poller:
             self.poller.stop()
-        self.poller = PollerThread(self.config_manager)
+        self.poller = PollerThread(self.config_manager, self.client)
         self.poller.data_received.connect(self.on_data_received)
         self.poller.status_msg.connect(self.on_status_msg)
         self.poller.start()
@@ -273,6 +284,12 @@ class AppController:
         
         # Apply updated settings to widget layout/styles
         self.widget.apply_settings()
+        # Credentials/server may have changed -> drop the cached auth so the
+        # next poller re-authenticates with the new settings.
+        self.client.token = None
+        self.client.user_id = None
+        self.client.account_id_hash = None
+        self.client.connections = []
         # Restart the poller with new settings
         self.start_poller()
 

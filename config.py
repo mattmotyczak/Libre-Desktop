@@ -1,7 +1,9 @@
 import os
+import sys
 import json
 
-CONFIG_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "config.json")
+APP_DIR = os.path.dirname(sys.executable) if getattr(sys, "frozen", False) else os.path.dirname(os.path.abspath(__file__))
+CONFIG_FILE = os.path.join(APP_DIR, "config.json")
 
 DEFAULT_CONFIG = {
     # Account Settings
@@ -17,10 +19,20 @@ DEFAULT_CONFIG = {
     "width": 220,
     "height": 130,
     "opacity": 0.9,
-    "theme": "dark",  # dark, light, cyberpunk, custom
-    "custom_bg": "#1e1e2e",
-    "custom_fg": "#cdd6f4",
+    "bg_color": "#1e1e2e",
+    "color_patient": "#89b4fa",
+    "color_high": "#fab387",
+    "color_low": "#f38ba8",
+    "color_normal": "#a6e3a1",
+    "color_updated": "#cdd6f4",
+    "color_misc": "#cdd6f4",
+    "opacity_patient": 100,
+    "opacity_out": 100,
+    "opacity_normal": 100,
+    "opacity_updated": 60,
+    "opacity_misc": 100,
     "font_size": 12,
+    "text_fx": "none",  # none, shadow, outline
     "always_on_top": True,
     "is_widget": True,  # True = frameless transparent widget, False = normal window
     

@@ -81,7 +81,7 @@ class SettingsDialog(QDialog):
         # Tab 2: Style
         self.tab_style = QWidget()
         self.init_style_tab()
-        self.tabs.addTab(self.tab_style, "Style / Theme")
+        self.tabs.addTab(self.tab_style, "Style")
 
         # Tab 3: Alerts
         self.tab_alerts = QWidget()
@@ -123,52 +123,111 @@ class SettingsDialog(QDialog):
     def init_style_tab(self):
         layout = QVBoxLayout(self.tab_style)
         form = QFormLayout()
-        
+
         self.in_is_widget = QCheckBox("Show as Desktop Widget (Transparent, Frameless)")
         form.addRow("", self.in_is_widget)
-        
+
         self.in_always_on_top = QCheckBox("Always on Top")
         form.addRow("", self.in_always_on_top)
-        
+
         self.in_opacity = QSlider(Qt.Horizontal)
-        self.in_opacity.setRange(30, 100)
-        form.addRow("Opacity:", self.in_opacity)
-        
-        self.in_theme = QComboBox()
-        self.in_theme.addItems(["dark", "light", "cyberpunk", "custom"])
-        self.in_theme.currentTextChanged.connect(self.toggle_custom_colors)
-        form.addRow("Theme Preset:", self.in_theme)
-        
-        # Custom Theme Colors
-        self.custom_colors_widget = QWidget()
-        cc_layout = QHBoxLayout(self.custom_colors_widget)
-        cc_layout.setContentsMargins(0, 0, 0, 0)
-        
-        self.btn_custom_bg = QPushButton("Background Color")
-        self.btn_custom_fg = QPushButton("Text Color")
-        self.btn_custom_bg.clicked.connect(self.pick_bg)
-        self.btn_custom_fg.clicked.connect(self.pick_fg)
-        
-        cc_layout.addWidget(self.btn_custom_bg)
-        cc_layout.addWidget(self.btn_custom_fg)
-        form.addRow("Custom Colors:", self.custom_colors_widget)
-        
+        self.in_opacity.setRange(10, 100)
+        form.addRow("Widget Opacity:", self.in_opacity)
+
+        self.btn_bg = QPushButton()
+        self.btn_bg.setFixedWidth(56)
+        self.btn_bg.setStyleSheet("background-color: #1e1e2e; border: 1px solid #45475a;")
+        self.btn_bg.clicked.connect(self.pick_bg)
+        form.addRow("Background:", self.btn_bg)
+
         self.in_font_size = QSlider(Qt.Horizontal)
         self.in_font_size.setRange(10, 24)
         form.addRow("Font Base Size:", self.in_font_size)
-        
+
+        self.in_text_fx = QComboBox()
+        self.in_text_fx.addItems(["None", "Text Shadow", "Text Outline"])
+        form.addRow("Text Effect:", self.in_text_fx)
+
         self.in_width = QDoubleSpinBox()
         self.in_width.setRange(150, 600)
         self.in_width.setDecimals(0)
         form.addRow("Width (px):", self.in_width)
-        
+
         self.in_height = QDoubleSpinBox()
         self.in_height.setRange(100, 400)
         self.in_height.setDecimals(0)
         form.addRow("Height (px):", self.in_height)
-        
+
         layout.addLayout(form)
+
+        # Element color + opacity controls
+        elems_layout = QVBoxLayout()
+        ttl = QLabel("Element Colors")
+        ttl.setStyleSheet("font-weight: bold; color: #a6adc8; padding-top: 6px;")
+        elems_layout.addWidget(ttl)
+
+        self.color_values = {}
+        self.color_buttons = {}
+        self.color_sliders = {}
+
+        self._add_color_row(elems_layout, "Name of Patient", "opacity_patient", [("", "patient")])
+        self._add_color_row(elems_layout, "Low/High Glucose", "opacity_out", [("Low", "low"), ("High", "high")])
+        self._add_color_row(elems_layout, "In-Range Glucose", "opacity_normal", [("", "normal")])
+        self._add_color_row(elems_layout, "Updated", "opacity_updated", [("", "updated")])
+        self._add_color_row(elems_layout, "Misc. Text", "opacity_misc", [("", "misc")])
+
+        layout.addLayout(elems_layout)
         layout.addStretch()
+
+    def _add_color_row(self, layout, label, slider_key, color_specs):
+        """Add a row: label + one/two color buttons + one opacity slider."""
+        row = QHBoxLayout()
+        lbl = QLabel(label)
+        lbl.setFixedWidth(120)
+        row.addWidget(lbl)
+
+        for btn_text, key in color_specs:
+            btn = QPushButton(btn_text)
+            if btn_text:
+                btn.setFixedWidth(48)
+            else:
+                btn.setFixedWidth(32)
+            btn.setStyleSheet("background-color: #cdd6f4; border: 1px solid #45475a;")
+            btn.clicked.connect(lambda checked=False, k=key, b=btn: self.pick_element_color(k, b))
+            row.addWidget(btn)
+            self.color_buttons[key] = btn
+
+        row.addStretch()
+
+        slider = QSlider(Qt.Horizontal)
+        slider.setRange(0, 100)
+        slider.setFixedWidth(120)
+        slider.valueChanged.connect(lambda v, k=slider_key: self.update_opacity_label(k, v))
+        row.addWidget(slider)
+        self.color_sliders[slider_key] = slider
+
+        # Little opacity % indicator
+        indicator = QLabel("100%")
+        indicator.setFixedWidth(38)
+        self.opacity_labels = getattr(self, "opacity_labels", {})
+        self.opacity_labels[slider_key] = indicator
+        row.addWidget(indicator)
+
+        layout.addLayout(row)
+
+    def update_opacity_label(self, slider_key, val):
+        ind = self.opacity_labels.get(slider_key)
+        if ind:
+            ind.setText(f"{val}%")
+
+    def pick_element_color(self, key, btn):
+        current = self.color_values.get(key, "#cdd6f4")
+        col = QColorDialog.getColor(QColor(current), self, "Select Color")
+        if col.isValid():
+            self.color_values[key] = col.name()
+            btn.setStyleSheet(
+                f"background-color: {col.name()}; color: #11111b; border: 1px solid #45475a;"
+            )
 
     def init_alerts_tab(self):
         layout = QVBoxLayout(self.tab_alerts)
@@ -200,18 +259,14 @@ class SettingsDialog(QDialog):
         layout.addLayout(form)
         layout.addStretch()
 
-    def toggle_custom_colors(self, theme):
-        self.custom_colors_widget.setVisible(theme == "custom")
-
     def pick_bg(self):
-        col = QColorDialog.getColor(QColor(self.custom_bg), self, "Select Background Color")
+        current = self.color_values.get("bg", "#1e1e2e")
+        col = QColorDialog.getColor(QColor(current), self, "Select Background Color")
         if col.isValid():
-            self.custom_bg = col.name()
-
-    def pick_fg(self):
-        col = QColorDialog.getColor(QColor(self.custom_fg), self, "Select Text Color")
-        if col.isValid():
-            self.custom_fg = col.name()
+            self.color_values["bg"] = col.name()
+            self.btn_bg.setStyleSheet(
+                f"background-color: {col.name()}; border: 1px solid #45475a;"
+            )
 
     def update_unit_labels(self, unit):
         # Update spinbox limits and defaults based on unit
@@ -239,13 +294,47 @@ class SettingsDialog(QDialog):
         self.in_is_widget.setChecked(cfg.get("is_widget"))
         self.in_always_on_top.setChecked(cfg.get("always_on_top"))
         self.in_opacity.setValue(int(cfg.get("opacity") * 100))
-        self.in_theme.setCurrentText(cfg.get("theme"))
-        
-        self.custom_bg = cfg.get("custom_bg")
-        self.custom_fg = cfg.get("custom_fg")
-        self.toggle_custom_colors(cfg.get("theme"))
-        
+
+        self.color_values["bg"] = cfg.get("bg_color")
+        self.btn_bg.setStyleSheet(
+            f"background-color: {cfg.get('bg_color')}; border: 1px solid #45475a;"
+        )
+
+        # Element colors
+        color_keys = {
+            "patient": "color_patient",
+            "high": "color_high",
+            "low": "color_low",
+            "normal": "color_normal",
+            "updated": "color_updated",
+            "misc": "color_misc",
+        }
+        for key, cfg_key in color_keys.items():
+            col = cfg.get(cfg_key)
+            self.color_values[key] = col
+            btn = self.color_buttons.get(key)
+            if btn:
+                btn.setStyleSheet(
+                    f"background-color: {col}; color: #11111b; border: 1px solid #45475a;"
+                )
+
+        # Opacities
+        for slider_key, opacity_key in [
+            ("opacity_patient", "opacity_patient"),
+            ("opacity_out", "opacity_out"),
+            ("opacity_normal", "opacity_normal"),
+            ("opacity_updated", "opacity_updated"),
+            ("opacity_misc", "opacity_misc"),
+        ]:
+            slider = self.color_sliders.get(slider_key)
+            if slider:
+                val = cfg.get(opacity_key)
+                slider.setValue(val)
+                self.update_opacity_label(slider_key, val)
+
         self.in_font_size.setValue(cfg.get("font_size"))
+        fx = cfg.get("text_fx", "none")
+        self.in_text_fx.setCurrentText({"none": "None", "shadow": "Text Shadow", "outline": "Text Outline"}.get(fx, "None"))
         self.in_width.setValue(cfg.get("width"))
         self.in_height.setValue(cfg.get("height"))
         
@@ -318,10 +407,21 @@ class SettingsDialog(QDialog):
         cfg.set("is_widget", self.in_is_widget.isChecked())
         cfg.set("always_on_top", self.in_always_on_top.isChecked())
         cfg.set("opacity", self.in_opacity.value() / 100.0)
-        cfg.set("theme", self.in_theme.currentText())
-        cfg.set("custom_bg", self.custom_bg)
-        cfg.set("custom_fg", self.custom_fg)
+        cfg.set("bg_color", self.color_values.get("bg", "#1e1e2e"))
+        cfg.set("color_patient", self.color_values.get("patient", "#89b4fa"))
+        cfg.set("color_high", self.color_values.get("high", "#fab387"))
+        cfg.set("color_low", self.color_values.get("low", "#f38ba8"))
+        cfg.set("color_normal", self.color_values.get("normal", "#a6e3a1"))
+        cfg.set("color_updated", self.color_values.get("updated", "#cdd6f4"))
+        cfg.set("color_misc", self.color_values.get("misc", "#cdd6f4"))
+        cfg.set("opacity_patient", self.color_sliders["opacity_patient"].value())
+        cfg.set("opacity_out", self.color_sliders["opacity_out"].value())
+        cfg.set("opacity_normal", self.color_sliders["opacity_normal"].value())
+        cfg.set("opacity_updated", self.color_sliders["opacity_updated"].value())
+        cfg.set("opacity_misc", self.color_sliders["opacity_misc"].value())
         cfg.set("font_size", self.in_font_size.value())
+        fx = self.in_text_fx.currentText()
+        cfg.set("text_fx", {"Text Shadow": "shadow", "Text Outline": "outline"}.get(fx, "none"))
         cfg.set("width", self.in_width.value())
         cfg.set("height", self.in_height.value())
         

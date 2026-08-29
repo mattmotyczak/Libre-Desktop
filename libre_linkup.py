@@ -32,6 +32,7 @@ class LibreLinkUpClient:
         self.token = None
         self.user_id = None
         self.account_id_hash = None
+        self.connections = []
         
         # Mock mode data state
         self.mock_glucose = 110.0
@@ -87,8 +88,16 @@ class LibreLinkUpClient:
                     self.token = data.get("authTicket", {}).get("token")
                     self.user_id = data.get("user", {}).get("id")
                     self.account_id_hash = None # Reset to recompute
+                    # The login response already carries the patient connections
+                    # (and their latest glucose reading). Cache them so the
+                    # patient list is reliable without a fragile second call.
+                    self.connections = data.get("connections") or []
                     print(f"Token acquired successfully (length={len(self.token) if self.token else 0})")
+                    print(f"Connections from login response: {len(self.connections)}")
                     return True, "Login successful"
+                elif res_data.get("status") == 429:
+                    # LibreLinkUp rate-limits the login endpoint aggressively.
+                    return False, "Too many login attempts. Wait a few minutes and retry."
                 else:
                     return False, res_data.get("error", {}).get("message", "Unknown API error")
             else:
@@ -107,18 +116,33 @@ class LibreLinkUpClient:
                 "targetHigh": 180
             }]
 
+        # Prefer the connections captured at login (reliable), then refresh live.
+        if self.connections:
+            return self.connections
+        return self._fetch_connections()
+
+    def _fetch_connections(self):
+        """Live call to refresh the connection list and latest readings."""
+        if not self.token:
+            return self.connections
+
         url = f"{self.get_base_url()}/llu/connections"
         try:
             response = requests.get(url, headers=self.get_headers(), timeout=10)
             if response.status_code == 200:
                 res_data = response.json()
                 if res_data.get("status") == 0:
-                    return res_data.get("data", [])
-            print(f"Failed to get connections: {response.text}")
-            return []
+                    data = res_data.get("data")  # may be a list or {"connections": [...]}
+                    conns = data.get("connections") if isinstance(data, dict) else data
+                    if isinstance(conns, list) and conns:
+                        self.connections = conns
+                        return conns
+                    return self.connections
+            print(f"Failed to refresh connections: {response.text[:200]}")
+            return self.connections
         except Exception as e:
             print(f"Error fetching connections: {e}")
-            return []
+            return self.connections
 
     def get_glucose_reading(self, patient_id):
         """Gets the latest reading for the specified patient ID."""
@@ -151,7 +175,11 @@ class LibreLinkUpClient:
             }
 
         # Otherwise, fetch from live connection list
-        connections = self.get_connections()
+        # Refresh live so the poll gets fresh readings; fall back to cached.
+        connections = self._fetch_connections()
+        if not connections:
+            connections = self.connections
+
         for conn in connections:
             if conn.get("id") == patient_id:
                 glucose_data = conn.get("glucoseMeasurement")

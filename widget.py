@@ -1,37 +1,86 @@
 import sys
 from PySide6.QtCore import Qt, QPoint, Signal
 from PySide6.QtWidgets import QWidget, QVBoxLayout, QHBoxLayout, QLabel, QMenu
-from PySide6.QtGui import QFont, QColor, QPalette, QBrush
+from PySide6.QtGui import QFont, QColor, QPalette, QBrush, QPainter, QPen, QPainterPath, QPaintEvent, QFontMetrics
 
-THEMES = {
-    "dark": {
-        "bg": "#181825",
-        "fg": "#cdd6f4",
-        "title": "#89b4fa",
-        "border": "#313244",
-        "normal": "#a6e3a1",  # Green
-        "high": "#fab387",    # Orange
-        "low": "#f38ba8"      # Red
-    },
-    "light": {
-        "bg": "#f2f2f7",
-        "fg": "#1c1c1e",
-        "title": "#007aff",
-        "border": "#d1d1d6",
-        "normal": "#34c759",  # Green
-        "high": "#ff9500",    # Orange
-        "low": "#ff3b30"      # Red
-    },
-    "cyberpunk": {
-        "bg": "#000000",
-        "fg": "#00ffcc",
-        "title": "#ff007f",
-        "border": "#00ffcc",
-        "normal": "#00ffcc",
-        "high": "#ffcc00",
-        "low": "#ff0055"
-    }
-}
+class FXLabel(QLabel):
+    """QLabel that can optionally render its text with a shadow or an outline.
+
+    Modes (set via configure()):
+      - "none":    normal Qt rendering (respects the label's stylesheet color)
+      - "shadow":  a soft dark offset copy of the glyphs behind the text
+      - "outline": the glyphs stroked with a contrasting color
+    """
+
+    def __init__(self, text="", parent=None):
+        super().__init__(text, parent)
+        self._fill = QColor("#cdd6f4")
+        self._fx = "none"
+        self._fx_color = QColor("#000000")
+
+    def configure(self, fill_hex, alpha, fx="none", fx_hex="#000000"):
+        """Set the text fill color/opacity and the shadow/outline effect."""
+        fill = QColor(fill_hex)
+        fill.setAlpha(max(0, min(255, int(round(255 * alpha / 100.0)))))
+        self._fill = fill
+        self._fx = fx
+        self._fx_color = QColor(fx_hex)
+        # Keep the stylesheet color in sync (used for the "none" mode)
+        self.setStyleSheet(f"color: rgba({fill.red()}, {fill.green()}, {fill.blue()}, {fill.alpha()});")
+        self.update()
+
+    def paintEvent(self, event: QPaintEvent):
+        text = self.text()
+        shown = self._elide(text)
+        if self._fx == "none":
+            super().paintEvent(event)
+            # In "none" mode QLabel clips overflowing text; force an elided redraw
+            # so long names never get cut at the right edge.
+            if shown != text:
+                self._paint_text(shown, Qt.ElideRight)
+            return
+
+        if not shown:
+            return
+
+        self._paint_text(shown, Qt.ElideNone)
+
+    def _elide(self, text):
+        if not text:
+            return ""
+        fm = QFontMetrics(self.font())
+        return fm.elidedText(text, Qt.ElideRight, max(1, self.width()))
+
+    def _paint_text(self, text, elide):
+        if not text:
+            return
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.Antialiasing)
+        font = self.font()
+        path = QPainterPath()
+        path.addText(0, 0, font, text)
+        bounds = path.boundingRect()
+
+        # Center the glyphs within the label
+        cx = self.rect().center().x() - bounds.center().x()
+        cy = self.rect().center().y() - bounds.center().y()
+        painter.translate(cx, cy)
+
+        if self._fx == "shadow":
+            painter.setPen(Qt.NoPen)
+            painter.setBrush(QColor(0, 0, 0, 170))
+            painter.save()
+            painter.translate(1.5, 2.0)
+            painter.drawPath(path)
+            painter.restore()
+            painter.setBrush(self._fill)
+            painter.drawPath(path)
+        elif self._fx == "outline":
+            painter.setPen(QPen(self._fx_color, 1.4))
+            painter.setBrush(self._fill)
+            painter.drawPath(path)
+
+        painter.end()
 
 class GlucoseWidget(QWidget):
     open_settings_requested = Signal()
@@ -54,7 +103,7 @@ class GlucoseWidget(QWidget):
 
         # Title/Header
         self.header_layout = QHBoxLayout()
-        self.title_label = QLabel("LibreLinkUp Glucose")
+        self.title_label = FXLabel("LibreLinkUp Glucose")
         self.title_label.setFont(QFont("Outfit", 9, QFont.Bold))
         self.header_layout.addWidget(self.title_label)
         self.header_layout.addStretch()
@@ -63,13 +112,13 @@ class GlucoseWidget(QWidget):
         # Glucose Display
         self.glucose_layout = QHBoxLayout()
         
-        self.value_label = QLabel("--")
+        self.value_label = FXLabel("--")
         self.value_label.setFont(QFont("Outfit", 32, QFont.Bold))
         
-        self.unit_label = QLabel("mg/dL")
+        self.unit_label = FXLabel("mg/dL")
         self.unit_label.setFont(QFont("Outfit", 12))
         
-        self.arrow_label = QLabel("→")
+        self.arrow_label = FXLabel("→")
         self.arrow_label.setFont(QFont("Outfit", 28, QFont.Bold))
         
         self.glucose_layout.addWidget(self.value_label)
@@ -80,7 +129,7 @@ class GlucoseWidget(QWidget):
         self.layout.addLayout(self.glucose_layout)
 
         # Footer Status Label
-        self.status_label = QLabel("Loading data...")
+        self.status_label = FXLabel("Loading data...")
         self.status_label.setFont(QFont("Outfit", 8))
         self.layout.addWidget(self.status_label)
 
@@ -114,64 +163,54 @@ class GlucoseWidget(QWidget):
         # Show window
         self.show()
 
+    def _rgba(self, hex_color, opacity_pct):
+        """Return a QSS rgba() string from a hex color + opacity percentage."""
+        c = QColor(hex_color)
+        a = max(0, min(255, int(round(255 * opacity_pct / 100.0))))
+        return f"rgba({c.red()}, {c.green()}, {c.blue()}, {a})"
+
     def update_style(self, current_val=None):
         cfg = self.config_manager
-        theme_name = cfg.get("theme")
-        
-        if theme_name == "custom":
-            bg = cfg.get("custom_bg")
-            fg = cfg.get("custom_fg")
-            title = fg
-            border = fg
-            normal_c = "#4ade80"
-            high_c = "#f97316"
-            low_c = "#ef4444"
-        else:
-            t_data = THEMES.get(theme_name, THEMES["dark"])
-            bg = t_data["bg"]
-            fg = t_data["fg"]
-            title = t_data["title"]
-            border = t_data["border"]
-            normal_c = t_data["normal"]
-            high_c = t_data["high"]
-            low_c = t_data["low"]
+        bg = cfg.get("bg_color")
 
-        # Color-code based on value thresholds
-        val_color = fg
+        # Value color switches based on glucose thresholds
         if current_val is not None:
-            # Handle mg/dL and mmol/L conversions for thresholds
-            unit = cfg.get("unit", "mg/dL")
             high_t = cfg.get("high_threshold")
             low_t = cfg.get("low_threshold")
-            
             if current_val >= high_t:
-                val_color = high_c
+                val_color, val_alpha = cfg.get("color_high"), cfg.get("opacity_out")
             elif current_val <= low_t:
-                val_color = low_c
+                val_color, val_alpha = cfg.get("color_low"), cfg.get("opacity_out")
             else:
-                val_color = normal_c
+                val_color, val_alpha = cfg.get("color_normal"), cfg.get("opacity_normal")
+        else:
+            val_color, val_alpha = cfg.get("color_normal"), cfg.get("opacity_normal")
 
         # Custom QSS styling
+        misc_c = self._rgba(cfg.get("color_misc"), cfg.get("opacity_misc"))
         border_radius = "12px" if cfg.get("is_widget") else "0px"
-        border_style = f"1px solid {border}" if cfg.get("is_widget") else "none"
-        
+        border_style = f"1px solid {misc_c}" if cfg.get("is_widget") else "none"
+
         self.setStyleSheet(f"""
             GlucoseWidget {{
                 background-color: {bg};
-                color: {fg};
+                color: {misc_c};
                 border: {border_style};
                 border-radius: {border_radius};
             }}
             QLabel {{
-                color: {fg};
+                color: {misc_c};
             }}
         """)
-        
-        # Apply colors to labels
-        self.title_label.setStyleSheet(f"color: {title};")
-        self.value_label.setStyleSheet(f"color: {val_color};")
-        self.arrow_label.setStyleSheet(f"color: {val_color};")
-        self.status_label.setStyleSheet(f"color: {fg}; opacity: 0.7;")
+
+        fx = cfg.get("text_fx", "none")
+
+        # Apply colors to labels (each independently styled, with optional fx)
+        self.title_label.configure(cfg.get("color_patient"), cfg.get("opacity_patient"), fx)
+        self.value_label.configure(val_color, val_alpha, fx)
+        self.arrow_label.configure(val_color, val_alpha, fx)
+        self.unit_label.configure(cfg.get("color_misc"), cfg.get("opacity_misc"), fx)
+        self.status_label.configure(cfg.get("color_updated"), cfg.get("opacity_updated"), fx)
         
         # Update fonts
         base_size = cfg.get("font_size")
