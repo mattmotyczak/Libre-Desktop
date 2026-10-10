@@ -1,5 +1,7 @@
 import sys
 import os
+import time
+import random
 import winreg
 from PySide6.QtCore import Qt, QThread, Signal, QTimer
 from PySide6.QtWidgets import QApplication, QSystemTrayIcon, QMenu
@@ -45,8 +47,6 @@ class PollerThread(QThread):
         self.running = True
 
     def run(self):
-        # Reuse the shared, already-authenticated client so we don't hammer
-        # the login endpoint (LibreLinkUp rate-limits to a few/minute -> HTTP 429).
         email = self.config_manager.get("email")
         pwd = self.config_manager.get("password")
         region = self.config_manager.get("region")
@@ -56,41 +56,49 @@ class PollerThread(QThread):
         client.password = pwd
         client.region = region
 
+        backoff = 30
+        max_backoff = 300
+
         while self.running:
-            # Only login if we don't have a token yet
-            if client.token is None:
+            token_expired = (
+                client.token_expiry is not None
+                and time.time() >= client.token_expiry
+            )
+
+            if client.token is None or client.auth_failed or token_expired:
+                if token_expired and client.token is not None:
+                    print("Token expiring soon, refreshing...")
                 ok, msg = client.login()
                 if ok:
-                    pass
+                    backoff = 30
                 else:
                     self.status_msg.emit(f"Auth failed: {msg}")
-                    # Wait 30 seconds before retrying login
-                    self.msleep(30000)
+                    jitter = random.uniform(0, 5)
+                    self.msleep(int((backoff + jitter) * 1000))
+                    backoff = min(backoff * 2, max_backoff)
                     continue
 
             patient_id = self.config_manager.get("patient_id")
             if not patient_id:
-                # If no patient saved, check connection list
                 conns = client.get_connections()
                 if conns:
                     patient_id = conns[0].get("id")
                     self.config_manager.set("patient_id", patient_id)
                     self.config_manager.set("patient_name", f"{conns[0].get('firstName', '')} {conns[0].get('lastName', '')}".strip())
                 else:
-                    patient_id = "mock-patient-1" # Fallback to mock
+                    patient_id = "mock-patient-1"
 
             reading = client.get_glucose_reading(patient_id)
             if reading:
                 self.data_received.emit(
-                    reading["value"], 
-                    reading["trend_arrow"], 
-                    reading["timestamp"], 
+                    reading["value"],
+                    reading["trend_arrow"],
+                    reading["timestamp"],
                     reading["is_mock"]
                 )
             else:
                 self.status_msg.emit("Reading failed")
 
-            # Poll every 60 seconds
             for _ in range(60):
                 if not self.running:
                     break
@@ -290,6 +298,8 @@ class AppController:
         self.client.user_id = None
         self.client.account_id_hash = None
         self.client.connections = []
+        self.client.token_expiry = None
+        self.client.auth_failed = False
         # Restart the poller with new settings
         self.start_poller()
 

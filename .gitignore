@@ -1,0 +1,7 @@
+*.json
+.gitattributes
+build/
+config.json.gitignore
+.atl/
+__pycache__/
+dist/

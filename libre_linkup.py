@@ -33,6 +33,8 @@ class LibreLinkUpClient:
         self.user_id = None
         self.account_id_hash = None
         self.connections = []
+        self.token_expiry = None
+        self.auth_failed = False
         
         # Mock mode data state
         self.mock_glucose = 110.0
@@ -58,8 +60,11 @@ class LibreLinkUpClient:
             headers["Account-Id"] = self.account_id_hash
         return headers
 
+    @staticmethod
+    def _is_transient_error(status_code):
+        return status_code in (429, 430) or status_code >= 500
+
     def login(self):
-        # If credentials are not set, run in mock mode
         if not self.email or not self.password:
             print("No credentials provided. Running in OFFLINE MOCK MODE.")
             return True, "Mock Account"
@@ -69,41 +74,75 @@ class LibreLinkUpClient:
             "email": self.email,
             "password": self.password
         }
-        try:
-            print(f"Attempting login to base URL: {self.get_base_url()} ...")
-            response = requests.post(url, json=payload, headers=self.get_headers(), timeout=10)
-            print(f"Login Response status code: {response.status_code}")
-            if response.status_code == 200:
-                res_data = response.json()
-                print(f"Login Response JSON keys: {list(res_data.keys())}")
-                if "data" in res_data:
-                    data_keys = list(res_data["data"].keys())
-                    print(f"Login Response data keys: {data_keys}")
-                    if "authTicket" in res_data["data"]:
-                        ticket_keys = list(res_data["data"]["authTicket"].keys())
-                        print(f"Login Response authTicket keys: {ticket_keys}")
-                
-                if res_data.get("status") == 0:
-                    data = res_data.get("data", {})
-                    self.token = data.get("authTicket", {}).get("token")
-                    self.user_id = data.get("user", {}).get("id")
-                    self.account_id_hash = None # Reset to recompute
-                    # The login response already carries the patient connections
-                    # (and their latest glucose reading). Cache them so the
-                    # patient list is reliable without a fragile second call.
-                    self.connections = data.get("connections") or []
-                    print(f"Token acquired successfully (length={len(self.token) if self.token else 0})")
-                    print(f"Connections from login response: {len(self.connections)}")
-                    return True, "Login successful"
-                elif res_data.get("status") == 429:
-                    # LibreLinkUp rate-limits the login endpoint aggressively.
-                    return False, "Too many login attempts. Wait a few minutes and retry."
+
+        max_retries = 3
+        for attempt in range(1, max_retries + 1):
+            try:
+                print(f"Attempting login to base URL: {self.get_base_url()} (attempt {attempt}/{max_retries}) ...")
+                response = requests.post(url, json=payload, headers=self.get_headers(), timeout=10)
+                print(f"Login Response status code: {response.status_code}")
+
+                if response.status_code == 200:
+                    res_data = response.json()
+                    print(f"Login Response JSON keys: {list(res_data.keys())}")
+                    if "data" in res_data:
+                        data_keys = list(res_data["data"].keys())
+                        print(f"Login Response data keys: {data_keys}")
+                        if "authTicket" in res_data["data"]:
+                            ticket_keys = list(res_data["data"]["authTicket"].keys())
+                            print(f"Login Response authTicket keys: {ticket_keys}")
+
+                    if res_data.get("status") == 0:
+                        data = res_data.get("data", {})
+                        auth_ticket = data.get("authTicket", {})
+                        self.token = auth_ticket.get("token")
+                        self.user_id = data.get("user", {}).get("id")
+                        self.account_id_hash = None
+                        self.connections = data.get("connections") or []
+
+                        expires_in = auth_ticket.get("expiresIn")
+                        if expires_in:
+                            self.token_expiry = time.time() + expires_in - 60
+                        else:
+                            self.token_expiry = time.time() + 86400 - 60
+
+                        self.auth_failed = False
+                        print(f"Token acquired successfully (length={len(self.token) if self.token else 0})")
+                        print(f"Connections from login response: {len(self.connections)}")
+                        return True, "Login successful"
+                    elif res_data.get("status") == 429:
+                        if attempt < max_retries:
+                            wait = 2 ** attempt
+                            print(f"Rate limited (429). Waiting {wait}s before retry...")
+                            time.sleep(wait)
+                            continue
+                        return False, "Too many login attempts. Wait a few minutes and retry."
+                    else:
+                        error_msg = res_data.get("error", {}).get("message")
+                        if not error_msg:
+                            print(f"Unexpected response body: {str(res_data)[:500]}")
+                            error_msg = "Unknown API error"
+                        return False, error_msg
+
+                elif self._is_transient_error(response.status_code):
+                    if attempt < max_retries:
+                        wait = 2 ** attempt
+                        print(f"Transient error {response.status_code}. Waiting {wait}s before retry...")
+                        time.sleep(wait)
+                        continue
+                    return False, f"Server returned status code {response.status_code}"
                 else:
-                    return False, res_data.get("error", {}).get("message", "Unknown API error")
-            else:
-                return False, f"Server returned status code {response.status_code}"
-        except Exception as e:
-            return False, f"Connection failed: {str(e)}"
+                    return False, f"Server returned status code {response.status_code}"
+
+            except Exception as e:
+                if attempt < max_retries:
+                    wait = 2 ** attempt
+                    print(f"Connection error: {e}. Waiting {wait}s before retry...")
+                    time.sleep(wait)
+                    continue
+                return False, f"Connection failed: {str(e)}"
+
+        return False, "Login failed after retries"
 
     def get_connections(self):
         """Returns list of patients (connections). In mock mode, returns a mock connection."""
@@ -129,10 +168,15 @@ class LibreLinkUpClient:
         url = f"{self.get_base_url()}/llu/connections"
         try:
             response = requests.get(url, headers=self.get_headers(), timeout=10)
+            if response.status_code in (401, 403):
+                print(f"Auth expired or invalid (HTTP {response.status_code}). Will re-login.")
+                self.auth_failed = True
+                self.token = None
+                return []
             if response.status_code == 200:
                 res_data = response.json()
                 if res_data.get("status") == 0:
-                    data = res_data.get("data")  # may be a list or {"connections": [...]}
+                    data = res_data.get("data")
                     conns = data.get("connections") if isinstance(data, dict) else data
                     if isinstance(conns, list) and conns:
                         self.connections = conns
